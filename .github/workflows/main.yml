@@ -1,6 +1,5 @@
 name: RDP via Cloudflare Tunnel
-on:
-  workflow_dispatch:
+on: workflow_dispatch
 
 jobs:
   rdp:
@@ -10,31 +9,48 @@ jobs:
     steps:
       - name: Enable RDP & Firewall
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
-          Write-Host "✅ RDP enabled successfully."
 
       - name: Create RDP User
         run: |
-          $password = "admin@123"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          $pwd = "admin@123"
+          $sec = ConvertTo-SecureString $pwd -AsPlainText -Force
           if (-not (Get-LocalUser -Name "TOOLBOXLAP" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "TOOLBOXLAP" -Password $securePass -AccountNeverExpires
+            New-LocalUser -Name "TOOLBOXLAP" -Password $sec -AccountNeverExpires
           }
           Add-LocalGroupMember -Group "Administrators" -Member "TOOLBOXLAP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TOOLBOXLAP"
-          Write-Host "✅ User TOOLBOXLAP created with password admin@123."
 
-      - name: Install Cloudflared
+      - name: Install cloudflared
         run: |
-          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "$env:ProgramFiles\cloudflared.exe"
-          Write-Host "✅ Cloudflared installed successfully."
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi" -OutFile cloudflared.msi
+          Start-Process msiexec.exe -ArgumentList '/i cloudflared.msi /quiet /norestart' -Wait
+          Remove-Item cloudflared.msi -Force
 
-      - name: Start Cloudflare Tunnel (from Secret)
+      - name: Start cloudflared (using secret)
         env:
-          TUNNEL_ID: b3ac50fc-16ee-4391-9186-e8559de41982
           TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          TUNNEL_ID: b3ac50fc-16ee-4391-9186-e8559de41982
+        run: |
+          # register connector with token
+          & "$env:ProgramFiles\cloudflared\cloudflared.exe" service install $env:TUNNEL_TOKEN
+          Start-Sleep -Seconds 5
+          # run tunnel by ID
+          Start-Process "$env:ProgramFiles\cloudflared\cloudflared.exe" -ArgumentList "tunnel","run",$env:TUNNEL_ID -NoNewWindow
+          Start-Sleep -Seconds 8
+
+      - name: Verify local RDP
+        run: |
+          $t = Test-NetConnection -ComputerName localhost -Port 3389
+          if (-not $t.TcpTestSucceeded) { Write-Error "RDP not listening"; exit 1 }
+          Write-Host "✅ RDP listening"
+
+      - name: Show info & keep alive
+        run: |
+          Write-Host "RDP at rdp1.elwe.qzz.io — user TOOLBOXLAP / admin@123"
+          while ($true) { Write-Host "alive"; Start-Sleep -Seconds 300 }          TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
           Write-Host "🚀 Installing Cloudflare Tunnel service..."
           & "$env:ProgramFiles\cloudflared.exe" service install $env:TUNNEL_TOKEN
